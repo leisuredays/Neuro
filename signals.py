@@ -3,9 +3,16 @@ import queue
 
 class Signals:
     def __init__(self):
+        # 기존 통합 상태 (하위 호환성)
         self._human_speaking = False
         self._AI_speaking = False
         self._AI_thinking = False
+        
+        # 개별 LLM 상태
+        self._text_llm_thinking = False
+        self._tool_llm_thinking = False
+        self._image_llm_thinking = False
+        
         self._last_message_time = 0.0
         self._new_message = False
         self._tts_ready = False
@@ -115,3 +122,78 @@ class Signals:
     @terminate.setter
     def terminate(self, value):
         self._terminate = value
+
+    # 개별 LLM 상태 관리
+    @property
+    def text_llm_thinking(self):
+        return self._text_llm_thinking
+
+    @text_llm_thinking.setter
+    def text_llm_thinking(self, value):
+        self._text_llm_thinking = value
+        self.sio_queue.put(('text_llm_thinking', value))
+        if value:
+            print("SIGNALS: Text LLM Thinking Start")
+        else:
+            print("SIGNALS: Text LLM Thinking Stop")
+        self._update_combined_thinking()
+
+    @property
+    def tool_llm_thinking(self):
+        return self._tool_llm_thinking
+
+    @tool_llm_thinking.setter
+    def tool_llm_thinking(self, value):
+        self._tool_llm_thinking = value
+        self.sio_queue.put(('tool_llm_thinking', value))
+        if value:
+            print("SIGNALS: Tool LLM Thinking Start")
+        else:
+            print("SIGNALS: Tool LLM Thinking Stop")
+        self._update_combined_thinking()
+
+    @property
+    def image_llm_thinking(self):
+        return self._image_llm_thinking
+
+    @image_llm_thinking.setter
+    def image_llm_thinking(self, value):
+        self._image_llm_thinking = value
+        self.sio_queue.put(('image_llm_thinking', value))
+        if value:
+            print("SIGNALS: Image LLM Thinking Start")
+        else:
+            print("SIGNALS: Image LLM Thinking Stop")
+        self._update_combined_thinking()
+
+    def _update_combined_thinking(self):
+        """개별 LLM 상태를 기반으로 통합 AI_thinking 상태 업데이트"""
+        new_thinking = (self._text_llm_thinking or 
+                       self._tool_llm_thinking or 
+                       self._image_llm_thinking)
+        
+        if new_thinking != self._AI_thinking:
+            self._AI_thinking = new_thinking
+            self.sio_queue.put(('AI_thinking', new_thinking))
+            if new_thinking:
+                print("SIGNALS: AI Thinking Start (Combined)")
+            else:
+                print("SIGNALS: AI Thinking Stop (Combined)")
+
+    def get_thinking_status(self):
+        """현재 thinking 상태 요약"""
+        active = []
+        if self._text_llm_thinking:
+            active.append("text")
+        if self._tool_llm_thinking:
+            active.append("tool")
+        if self._image_llm_thinking:
+            active.append("image")
+        
+        return {
+            "combined": self._AI_thinking,
+            "active_llms": active,
+            "text": self._text_llm_thinking,
+            "tool": self._tool_llm_thinking,
+            "image": self._image_llm_thinking
+        }

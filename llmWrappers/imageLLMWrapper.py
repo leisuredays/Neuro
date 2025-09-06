@@ -1,7 +1,7 @@
 import os
 import mss, cv2, base64
 import numpy as np
-from transformers import AutoTokenizer
+import tiktoken
 from constants import *
 from llmWrappers.abstractLLMWrapper import AbstractLLMWrapper
 
@@ -13,16 +13,23 @@ class ImageLLMWrapper(AbstractLLMWrapper):
         self.SYSTEM_PROMPT = SYSTEM_PROMPT
         self.LLM_ENDPOINT = MULTIMODAL_ENDPOINT
         self.CONTEXT_SIZE = MULTIMODAL_CONTEXT_SIZE
-        self.tokenizer = AutoTokenizer.from_pretrained(MULTIMODAL_MODEL, token=os.getenv("HF_TOKEN"), trust_remote_code=True)
+        self.tokenizer = tiktoken.encoding_for_model(MODEL)
+
+        # Use separate API key for image LLM
+        self.image_api_key = os.environ.get('OPENAI_IMAGE_API_KEY', os.environ.get('OPENAI_API_KEY'))
+        self.headers = {
+            "Authorization": f"Bearer {self.image_api_key}",
+            "Content-Type": "application/json"
+        }
 
         self.MSS = None
 
     def screen_shot(self):
-        if self.MSS is None:
-            self.MSS = mss.mss()
-
+        # Create new MSS instance for each call to avoid thread issues
+        local_mss = mss.mss()
+        
         # Take a screenshot of the main screen
-        frame_bytes = self.MSS.grab(self.MSS.monitors[PRIMARY_MONITOR])
+        frame_bytes = local_mss.grab(local_mss.monitors[PRIMARY_MONITOR])
 
         frame_array = np.array(frame_bytes)
         # resize
@@ -35,12 +42,7 @@ class ImageLLMWrapper(AbstractLLMWrapper):
 
     def prepare_payload(self):
         return {
-            "mode": "instruct",
-            "stream": True,
-            "max_tokens": 200,
-            "skip_special_tokens": False,  # Necessary for Llama 3
-            "custom_token_bans": BANNED_TOKENS,
-            "stop": STOP_STRINGS,
+            "model": "gpt-4o-mini",
             "messages": [{
                 "role": "user",
                 "content": [
@@ -55,5 +57,7 @@ class ImageLLMWrapper(AbstractLLMWrapper):
                         }
                     }
                 ]
-            }]
+            }],
+            "max_tokens": 200,
+            "stream": True
         }

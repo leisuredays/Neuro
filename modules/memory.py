@@ -7,6 +7,7 @@ import json
 import uuid
 import asyncio
 import copy
+import os
 
 
 class Memory(Module):
@@ -20,8 +21,14 @@ class Memory(Module):
 
         self.processed_count = 0
 
-        self.chroma_client = chromadb.PersistentClient(path="./memories/chroma.db", settings=Settings(anonymized_telemetry=False))
-        self.collection = self.chroma_client.get_or_create_collection(name="neuro_collection")
+        self.chroma_client = chromadb.PersistentClient(
+            path=CHROMA_DB_PATH, 
+            settings=Settings(**CHROMA_SETTINGS)
+        )
+        self.collection = self.chroma_client.get_or_create_collection(
+            name=CHROMA_MEMORIES_COLLECTION,
+            metadata=CHROMA_COLLECTION_METADATA[CHROMA_MEMORIES_COLLECTION]
+        )
         print(f"MEMORY: Loaded {self.collection.count()} memories from database.")
         if self.collection.count() == 0:
             print("MEMORY: No memories found in database. Importing from memoryinit.json")
@@ -76,21 +83,36 @@ class Memory(Module):
                 for message in messages:
                     chat_section += message["content"]
 
+                # Create stop strings for memory generation (exclude newline)
+                memory_stop_strings = [s for s in STOP_STRINGS if s != "\n"]
+                
                 data = {
-                    "mode": "instruct",
+                    "model": MODEL,
                     "max_tokens": 200,
-                    "skip_special_tokens": False,  # Necessary for Llama 3
-                    "custom_token_bans": BANNED_TOKENS,
-                    "stop": STOP_STRINGS.remove("\n"),
                     "messages": [{
                         "role": "user",
                         "content": chat_section + MEMORY_PROMPT
-                    }]
+                    }],
+                    "stop": memory_stop_strings
                 }
-                headers = {"Content-Type": "application/json"}
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}"
+                }
 
-                response = requests.post(LLM_ENDPOINT + "/v1/chat/completions", headers=headers, json=data, verify=False)
-                raw_memories = response.json()['choices'][0]['message']['content']
+                response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=data)
+                response_data = response.json()
+                
+                # Check for API errors
+                if 'error' in response_data:
+                    print(f"[MEMORY] OpenAI API Error: {response_data['error']}")
+                    continue
+                    
+                if 'choices' not in response_data or len(response_data['choices']) == 0:
+                    print(f"[MEMORY] Invalid API response: {response_data}")
+                    continue
+                    
+                raw_memories = response_data['choices'][0]['message']['content']
 
                 # Split each Q&A section and add the new memory to the database
                 for memory in raw_memories.split("{qa}"):
@@ -115,7 +137,10 @@ class Memory(Module):
 
         def wipe(self):
             self.outer.chroma_client.reset()
-            self.outer.chroma_client.create_collection(name="neuro_collection")
+            self.outer.collection = self.outer.chroma_client.create_collection(
+                name=CHROMA_MEMORIES_COLLECTION,
+                metadata=CHROMA_COLLECTION_METADATA[CHROMA_MEMORIES_COLLECTION]
+            )
 
         def clear_short_term(self):
             short_term_memories = self.outer.collection.get(where={"type": "short-term"})

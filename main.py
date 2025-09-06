@@ -11,6 +11,7 @@ from prompter import Prompter
 from llmWrappers.llmState import LLMState
 from llmWrappers.textLLMWrapper import TextLLMWrapper
 from llmWrappers.imageLLMWrapper import ImageLLMWrapper
+from llmWrappers.toolLLMWrapper import ToolLLMWrapper
 from stt import STT
 from tts import TTS
 from modules.twitchClient import TwitchClient
@@ -20,6 +21,7 @@ from modules.multimodal import MultiModal
 from modules.customPrompt import CustomPrompt
 from modules.memory import Memory
 from socketioServer import SocketIOServer
+from websocketServer import WebSocketServer
 
 
 async def main():
@@ -52,7 +54,8 @@ async def main():
     llmState = LLMState()
     llms = {
         "text": TextLLMWrapper(signals, tts, llmState, modules),
-        "image": ImageLLMWrapper(signals, tts, llmState, modules)
+        "image": ImageLLMWrapper(signals, tts, llmState, modules),
+        "tool": ToolLLMWrapper(signals, tts, llmState, modules)
     }
     # Create Prompter
     prompter = Prompter(signals, llms, modules)
@@ -66,7 +69,7 @@ async def main():
     # Create Vtube Studio plugin
     modules['vtube_studio'] = VtubeStudio(signals, enabled=True)
     # Create Multimodal module
-    modules['multimodal'] = MultiModal(signals, enabled=False)
+    modules['multimodal'] = MultiModal(signals, enabled=True)
     # Create Custom Prompt module
     modules['custom_prompt'] = CustomPrompt(signals, enabled=True)
     # Create Memory module
@@ -75,13 +78,21 @@ async def main():
     # Create Socket.io server
     # The specific llmWrapper it gets doesn't matter since state is shared between all llmWrappers
     sio = SocketIOServer(signals, stt, tts, llms["text"], prompter, modules=modules)
+    
+    # Create WebSocket server for chat messages
+    ws_server = WebSocketServer(signals)
+    # Make WebSocket server accessible to other components
+    signals.ws_server = ws_server
 
+    
     # Create threads (As daemons, so they exit when the main thread exits)
     prompter_thread = threading.Thread(target=prompter.prompt_loop, daemon=True)
     stt_thread = threading.Thread(target=stt.listen_loop, daemon=True)
     sio_thread = threading.Thread(target=sio.start_server, daemon=True)
+    ws_thread = threading.Thread(target=ws_server.start_server, daemon=True)
     # Start Threads
     sio_thread.start()
+    ws_thread.start()
     prompter_thread.start()
     stt_thread.start()
 
@@ -93,6 +104,7 @@ async def main():
 
     while not signals.terminate:
         time.sleep(0.1)
+    
     print("TERMINATING ======================")
 
     # Wait for child threads to exit before exiting main thread
@@ -103,6 +115,8 @@ async def main():
 
     sio_thread.join()
     print("SIO EXITED ======================")
+    ws_thread.join()
+    print("WEBSOCKET EXITED ======================")
     prompter_thread.join()
     print("PROMPTER EXITED ======================")
     # stt_thread.join()

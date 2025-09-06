@@ -3,6 +3,7 @@ import requests
 import sseclient
 import json
 import time
+import os
 from dotenv import load_dotenv
 from constants import *
 from modules.injection import Injection
@@ -20,9 +21,14 @@ class AbstractLLMWrapper:
         else:
             self.modules = modules
 
-        self.headers = {"Content-Type": "application/json"}
-
-        load_dotenv()
+        load_dotenv()  # 환경변수 다시 로드
+        api_key = os.getenv('OPENAI_API_KEY')
+        print(f"DEBUG: API Key loaded: {api_key[:10]}..." if api_key else "DEBUG: API Key is None")
+        
+        self.headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
 
         #Below constants must be set by child classes
         self.SYSTEM_PROMPT = None
@@ -60,6 +66,36 @@ class AbstractLLMWrapper:
             prompt += injection.text
         return prompt
 
+    def _process_tool_results_naturally(self, tool_results):
+        """Tool 결과를 자연스러운 컨텍스트 정보로 변환"""
+        context_parts = []
+        
+        for tool_result in tool_results:
+            if isinstance(tool_result, dict):
+                # Raw tool result (successful execution)
+                if 'raw_result' in tool_result:
+                    raw = tool_result['raw_result']
+                    if isinstance(raw, dict):
+                        status = raw.get('status', 'unknown')
+                        if status == 'success' and 'weather' in raw:
+                            weather = raw['weather']
+                            context_parts.append(f"Current weather in {weather['location']}: {weather['temperature']}, {weather['condition']}, feels like {weather.get('feels_like', 'N/A')}, humidity {weather.get('humidity', 'N/A')}.")
+                        elif status == 'success' and 'result' in raw:
+                            context_parts.append(f"Retrieved information: {raw['result']}")
+                        elif 'result' in raw:
+                            context_parts.append(f"Information found: {raw['result']}")
+                
+                # Tool status messages (failures, no tools, etc.)
+                else:
+                    status = tool_result.get('status', 'unknown')
+                    if status in ['no_tools_needed', 'execution_failed', 'no_tool_calls', 'error']:
+                        return "\nThe external lookup couldn't be completed right now. Apologize briefly and provide a helpful alternative response based on your knowledge.\n"
+        
+        if context_parts:
+            return "\nRelevant information found:\n" + "\n".join(context_parts) + "\nUse this information to provide an accurate response.\n"
+        
+        return None
+
     def generate_prompt(self):
         messages = copy.deepcopy(self.signals.history)
 
@@ -77,13 +113,26 @@ class AbstractLLMWrapper:
 
             generation_prompt = AI_NAME + ": "
 
-            base_injections = [Injection(self.SYSTEM_PROMPT, 10), Injection(chat_section, 100)]
+            # Add tool results if available
+            tool_injections = []
+            if hasattr(self.signals, 'tool_results') and self.signals.tool_results:
+                context_info = self._process_tool_results_naturally(self.signals.tool_results)
+                if context_info:
+                    tool_injections = [Injection(context_info, 30)]  # Between system prompt and message history
+
+            # Store tool injections separately to exclude from memory
+            self.temp_tool_injections = tool_injections
+            base_injections = [Injection(self.SYSTEM_PROMPT, 10)] + tool_injections + [Injection(chat_section, 100)]
+            
+            # Clear tool results after using them to prevent accumulation
+            if hasattr(self.signals, 'tool_results'):
+                self.signals.tool_results = []
             full_prompt = self.assemble_injections(base_injections) + generation_prompt
             wrapper = [{"role": "user", "content": full_prompt}]
 
             # Find out roughly how many tokens the prompt is
             # Not 100% accurate, but it should be a good enough estimate
-            prompt_tokens = len(self.tokenizer.apply_chat_template(wrapper, tokenize=True, return_tensors="pt")[0])
+            prompt_tokens = len(self.tokenizer.encode(full_prompt))
             # print(prompt_tokens)
 
             # Maximum 90% context size usage before prompting LLM
@@ -107,26 +156,62 @@ class AbstractLLMWrapper:
         if not self.llmState.enabled:
             return
 
-        self.signals.AI_thinking = True
+        # Text/Image LLM 상태 설정 (Tool LLM은 별도 처리)
+        if getattr(self, 'save_to_history', True):
+            self.signals.text_llm_thinking = True
+        
         self.signals.new_message = False
         self.signals.sio_queue.put(("reset_next_message", None))
 
         data = self.prepare_payload()
+        print(f"DEBUG: Sending request to OpenAI API...")
+        print(f"DEBUG: Headers: {self.headers}")
+        print(f"DEBUG: Payload: {data}")
 
-        stream_response = requests.post(self.LLM_ENDPOINT + "/v1/chat/completions", headers=self.headers, json=data,
-                                        verify=False, stream=True)
-        response_stream = sseclient.SSEClient(stream_response)
+        try:
+            stream_response = requests.post("https://api.openai.com/v1/chat/completions", headers=self.headers, json=data,
+                                            stream=True)
+            print(f"DEBUG: Response status: {stream_response.status_code}")
+            
+            if stream_response.status_code != 200:
+                print(f"DEBUG: Response text: {stream_response.text}")
+                self.signals.AI_thinking = False
+                return
+                
+            response_stream = sseclient.SSEClient(stream_response)
+        except Exception as e:
+            print(f"DEBUG: Request failed: {e}")
+            self.signals.AI_thinking = False
+            return
 
         AI_message = ''
         for event in response_stream.events():
             # Check to see if next message was canceled
             if self.llmState.next_cancelled:
                 continue
+                
+            # Skip data: [DONE] messages
+            if event.data == '[DONE]':
+                continue
 
-            payload = json.loads(event.data)
-            chunk = payload['choices'][0]['delta']['content']
-            AI_message += chunk
-            self.signals.sio_queue.put(("next_chunk", chunk))
+            try:
+                payload = json.loads(event.data)
+# Debug logging disabled
+                
+                # OpenAI API structure: check if delta and content exist
+                if 'choices' in payload and len(payload['choices']) > 0:
+                    delta = payload['choices'][0].get('delta', {})
+                    chunk = delta.get('content', '')
+                    
+                    if chunk:  # Only add non-empty chunks
+                        AI_message += chunk
+                        # 실시간 전송 제거 - 최종 답변만 전송
+                        
+            except (json.JSONDecodeError, KeyError, IndexError) as e:
+                # Skip empty or malformed data without printing debug message
+                if event.data.strip() and event.data != "[DONE]":
+                    print(f"DEBUG: Error parsing event data: {e}")
+                continue
 
         if self.llmState.next_cancelled:
             self.llmState.next_cancelled = False
@@ -134,17 +219,44 @@ class AbstractLLMWrapper:
             self.signals.AI_thinking = False
             return
 
+        # Check for TOOL_TRIGGER token in response FIRST (before any output)
+        tool_triggered = False
+        if getattr(self, 'save_to_history', True) and '[TOOL_TRIGGER:' in AI_message:
+            import re
+            # Extract tool trigger request
+            match = re.search(r'\[TOOL_TRIGGER:(.*?)\]', AI_message)
+            if match:
+                tool_request = match.group(1).strip()
+                print(f"[TEXT LLM] Tool trigger detected: {tool_request}")
+                
+                # Remove the trigger token from the displayed message
+                AI_message = re.sub(r'\[TOOL_TRIGGER:.*?\]', '', AI_message).strip()
+                tool_triggered = True
+                
+                # Set signals for toolLLM
+                self.signals.tool_trigger_request = tool_request
+                self.signals.tool_execution_needed = True
+
         print("AI OUTPUT: " + AI_message)
         self.signals.last_message_time = time.time()
         self.signals.AI_speaking = True
-        self.signals.AI_thinking = False
+        
+        # Text/Image LLM thinking 종료
+        if getattr(self, 'save_to_history', True):
+            self.signals.text_llm_thinking = False
 
         if self.is_filtered(AI_message):
             AI_message = "Filtered."
             self.signals.sio_queue.put(("reset_next_message", None))
-            self.signals.sio_queue.put(("next_chunk", "Filtered."))
 
-        self.signals.history.append({"role": "assistant", "content": AI_message})
+        # Only save to history if not explicitly disabled (for Tool LLM) - save clean message
+        if getattr(self, 'save_to_history', True):
+            self.signals.history.append({"role": "assistant", "content": AI_message})
+        
+        # Send clean message to WebSocket server (without TOOL_TRIGGER tokens)
+        if hasattr(self.signals, 'ws_server') and self.signals.ws_server:
+            self.signals.ws_server.send_ai_response_sync(AI_message)
+        
         self.tts.play(AI_message)
 
     class API:
@@ -174,5 +286,5 @@ class AbstractLLMWrapper:
 
         def cancel_next(self):
             self.outer.llmState.next_cancelled = True
-            # For text-generation-webui: Immediately stop generation
-            requests.post(self.outer.LLM_ENDPOINT + "/v1/internal/stop-generation", headers={"Content-Type": "application/json"})
+            # OpenAI API doesn't have a stop generation endpoint
+            pass

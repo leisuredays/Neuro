@@ -1,6 +1,5 @@
 import os
-
-from transformers import AutoTokenizer
+import tiktoken
 from constants import *
 from llmWrappers.abstractLLMWrapper import AbstractLLMWrapper
 
@@ -12,18 +11,16 @@ class TextLLMWrapper(AbstractLLMWrapper):
         self.SYSTEM_PROMPT = SYSTEM_PROMPT
         self.LLM_ENDPOINT = LLM_ENDPOINT
         self.CONTEXT_SIZE = CONTEXT_SIZE
-        self.tokenizer = AutoTokenizer.from_pretrained(MODEL, token=os.getenv("HF_TOKEN"))
+        self.tokenizer = tiktoken.encoding_for_model(MODEL)
 
     def prepare_payload(self):
         return {
-            "mode": "instruct",
-            "stream": True,
-            "max_tokens": 200,
-            "skip_special_tokens": False,  # Necessary for Llama 3
-            "custom_token_bans": BANNED_TOKENS,
-            "stop": STOP_STRINGS,
+            "model": MODEL,
             "messages": [{
                 "role": "user",
                 "content": self.generate_prompt()
-            }]
+            }],
+            "max_tokens": 200,
+            "stream": True,
+            "stop": STOP_STRINGS
         }
