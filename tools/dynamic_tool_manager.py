@@ -57,6 +57,10 @@ class DynamicToolManager:
                 "keywords": ["search", "find", "look up", "information", "news", "web", "query", "discover"],
                 "tools": ["web_search"]
             },
+            "entertainment": {
+                "keywords": ["youtube", "video", "play", "watch"],
+                "tools": ["play_youtube_video"]
+            },
         }
         
         # Performance metrics

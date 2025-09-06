@@ -23,13 +23,17 @@ from .tool_vectorizer import ToolVectorizer
 from .dynamic.math_tool import MathTool
 from .dynamic.weather_tool import WeatherTool
 from .dynamic.web_search_tool import WebSearchTool
+from .dynamic.youtube_tool import YouTubeTool
+
+# Constants import
+from constants import CHROMA_TOOLS_DB_PATH
 
 logger = logging.getLogger(__name__)
 
 class NeuroDynamicSystem:
     """Neuro Dynamic Tool 통합 시스템"""
     
-    def __init__(self, signals=None, chroma_path: str = "./memories/chroma.db", 
+    def __init__(self, signals=None, chroma_path: str = CHROMA_TOOLS_DB_PATH, 
                  enabled: bool = True):
         self.signals = signals
         self.enabled = enabled
@@ -107,6 +111,10 @@ class NeuroDynamicSystem:
         # 웹 검색 도구
         web_search_tool = WebSearchTool()
         self.registry.register_tool(web_search_tool, "information")
+        
+        # YouTube 도구
+        youtube_tool = YouTubeTool()
+        self.registry.register_tool(youtube_tool, "entertainment")
         
         # 메모리 도구는 기존 시스템과 연동 (나중에 추가 구현)
         

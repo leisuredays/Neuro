@@ -77,11 +77,21 @@ class AbstractLLMWrapper:
                     raw = tool_result['raw_result']
                     if isinstance(raw, dict):
                         status = raw.get('status', 'unknown')
-                        if status == 'success' and 'weather' in raw:
-                            weather = raw['weather']
-                            context_parts.append(f"Current weather in {weather['location']}: {weather['temperature']}, {weather['condition']}, feels like {weather.get('feels_like', 'N/A')}, humidity {weather.get('humidity', 'N/A')}.")
-                        elif status == 'success' and 'result' in raw:
-                            context_parts.append(f"Retrieved information: {raw['result']}")
+                        if status == 'success':
+                            # Handle all successful tool executions uniformly
+                            if 'weather' in raw:
+                                weather = raw['weather']
+                                context_parts.append(f"Current weather in {weather['location']}: {weather['temperature']}, {weather['condition']}, feels like {weather.get('feels_like', 'N/A')}, humidity {weather.get('humidity', 'N/A')}.")
+                            elif 'title' in raw:
+                                # YouTube tool success
+                                action = raw.get('action', 'played')
+                                title = raw.get('title', 'video')
+                                context_parts.append(f"Successfully {action} YouTube video: {title}")
+                            elif 'result' in raw:
+                                context_parts.append(f"Retrieved information: {raw['result']}")
+                            else:
+                                # Generic success message
+                                context_parts.append(f"Tool executed successfully: {raw}")
                         elif 'result' in raw:
                             context_parts.append(f"Information found: {raw['result']}")
                 
@@ -89,10 +99,10 @@ class AbstractLLMWrapper:
                 else:
                     status = tool_result.get('status', 'unknown')
                     if status in ['no_tools_needed', 'execution_failed', 'no_tool_calls', 'error']:
-                        return "\nThe external lookup couldn't be completed right now. Apologize briefly and provide a helpful alternative response based on your knowledge.\n"
+                        return "\nThe external lookup couldn't be completed right now. Apologize briefly and provide a helpful alternative response based on your knowledge.\n\nIMPORTANT: DO NOT generate another TOOL_TRIGGER - the tool request has been processed.\n"
         
         if context_parts:
-            return "\nRelevant information found:\n" + "\n".join(context_parts) + "\nUse this information to provide an accurate response.\n"
+            return "\nRelevant information found:\n" + "\n".join(context_parts) + "\nUse this information to provide an accurate response.\n\nIMPORTANT: DO NOT generate another TOOL_TRIGGER - the tool request has been completed successfully.\n"
         
         return None
 

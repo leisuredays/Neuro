@@ -347,7 +347,7 @@ class ToolVectorizer:
             return []
 
 # 편의 함수들
-def create_tool_vectorizer(chroma_path: str = "./memories/chroma.db") -> ToolVectorizer:
+def create_tool_vectorizer(chroma_path: str = "./tools/tools_chroma.db") -> ToolVectorizer:
     """Tool Vectorizer 인스턴스 생성"""
     return ToolVectorizer(chroma_path)
 

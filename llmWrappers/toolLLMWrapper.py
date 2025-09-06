@@ -10,6 +10,7 @@ from llmWrappers.abstractLLMWrapper import AbstractLLMWrapper
 # Dynamic Tool System Integration
 from tools.neuro_dynamic_system import NeuroDynamicSystem, initialize_neuro_dynamic_system
 from tools.dynamic_tool_manager import ToolSelectionContext, SelectionStrategy
+from tools.failure_handler import handle_tool_failure
 
 
 class ToolLLMWrapper(AbstractLLMWrapper):
@@ -204,9 +205,15 @@ Execute the appropriate tools based on the request: "{tool_request}" """
                         **function_args
                     )
                     
-                    # Format result
-                    if "error" in tool_result:
-                        result = f"Tool error: {tool_result['error']}"
+                    # Format result - check for tool failure
+                    if "error" in tool_result or not tool_result.get("success", True):
+                        # Use failure handler for tool failures
+                        error_info = {
+                            "exception": tool_result.get("error", "Tool returned success=False"),
+                            "error_type": "execution_error"
+                        }
+                        failure_response = handle_tool_failure(function_name, error_info, function_args.get("query", ""))
+                        result = failure_response["fallback_response"]
                     else:
                         result = str(tool_result.get("result", tool_result))
                         
@@ -215,7 +222,10 @@ Execute the appropriate tools based on the request: "{tool_request}" """
                     result = await self._handle_fallback_tool(function_name, function_args)
                 
             except Exception as e:
-                result = f"Tool execution error: {str(e)}"
+                # Use failure handler to generate appropriate response
+                error_info = {"exception": e, "error_type": "execution_error"}
+                failure_response = handle_tool_failure(function_name, error_info, function_args.get("query", ""))
+                result = failure_response["fallback_response"]
                 print(f"[TOOL LLM] Tool execution failed: {e}")
             
             # Store both OpenAI format and raw result for signals
